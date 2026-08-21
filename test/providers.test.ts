@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { parse4zida } from "../src/providers/4zida.ts";
 import { parseHalooglasi } from "../src/providers/halooglasi.ts";
 import type { Listing } from "../src/types.ts";
 
@@ -55,4 +56,32 @@ test("halooglasi: maps every field of the first card", () => {
   assert.equal(first.price.value, 400);
   assert.equal(first.price.currency, "EUR");
   assert.equal(first.datePosted, "2026-08-21");
+});
+
+test("4zida: every parsed card is a usable listing", () => {
+  const listings = parse4zida(readFixture("4zida.html"));
+  assertListingInvariants(
+    listings,
+    /^\/(?:izdavanje|prodaja)-stanova\/.+\/[a-f0-9]{24}$/,
+    5,
+  );
+
+  for (const listing of listings) {
+    assert.ok(listing.location, `${listing.url} lost its location`);
+    assert.ok(listing.datePosted, `${listing.url} lost its date`);
+    assert.ok(listing.features.length > 0, `${listing.url} lost its features`);
+  }
+});
+
+test("4zida: maps every field of the first card", () => {
+  const [first] = parse4zida(readFixture("4zida.html"));
+  assert.ok(first);
+
+  assert.ok(first.location?.endsWith(", Beograd"));
+  assert.equal(first.price.raw, "350 €");
+  assert.equal(first.price.value, 350);
+  assert.equal(first.price.currency, "EUR");
+  assert.equal(first.datePosted, "2026-08-21");
+  assert.equal(first.features.length, 5);
+  assert.equal(first.features[0], "1 soba");
 });

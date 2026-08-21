@@ -14,11 +14,6 @@ const HOSTS = new Set(["4zida.rs", "www.4zida.rs"]);
 const LISTING_PATH_PATTERN =
   /\/(?:izdavanje|prodaja)-stanova\/.+\/[a-f0-9]{24}\/?$/i;
 
-/** 4zida writes square metres as "mtk" in the card feature line. */
-function normalizeFeatureText(value: string): string {
-  return value.replace(/\bmtk\b/gi, "m²");
-}
-
 function isListingUrl(url: string): boolean {
   try {
     return LISTING_PATH_PATTERN.test(new URL(url).pathname);
@@ -31,7 +26,7 @@ export function parse4zida(html: string): Listing[] {
   const $ = load(html);
   const listings: Listing[] = [];
 
-  $("main [test-data='ad-search-card']").each((_, element) => {
+  $("[test-data='ad-search-card']").each((_, element) => {
     const card = $(element);
 
     const href = card
@@ -45,38 +40,40 @@ export function parse4zida(html: string): Listing[] {
       return;
     }
 
+    const nameParagraph = card
+      .find("p.truncate.font-medium.leading-tight")
+      .first();
     const name =
-      cleanText(
-        card.find("p.truncate.font-medium.leading-tight").first().text(),
-      ) ?? cleanText(card.find("img[alt]").first().attr("alt"));
+      cleanText(nameParagraph.text()) ??
+      cleanText(card.find("img[alt]").first().attr("alt"));
     if (!name) {
       return;
     }
 
+    // Anchored on position, not on Tailwind classes, which change without notice.
     const location =
-      cleanText(
-        card
-          .find("p.line-clamp-2.text-sm.leading-tight.text-foreground\\/60")
-          .first()
-          .text(),
-      ) ?? cleanText(card.find("p.text-foreground\\/60").first().text());
+      cleanText(nameParagraph.next("p").text()) ??
+      cleanText(card.find("p.line-clamp-2").first().text());
 
-    const featureLine = cleanText(card.find("a.px-3.text-sm").first().text());
-    const features = (featureLine?.split("|") ?? [])
-      .map((part) => cleanText(part))
-      .filter((part): part is string => Boolean(part))
-      .map(normalizeFeatureText);
+    // Features are pill chips in the row directly below the title link.
+    const features = nameParagraph
+      .closest("a")
+      .next("div")
+      .children()
+      .map((__, chip) => cleanText($(chip).text()))
+      .get()
+      .filter((chip): chip is string => Boolean(chip));
 
     const rawPrice = cleanText(card.find("p.bg-spotlight span").first().text());
 
     const dateText =
       cleanText(
         card
-          .find("span.text-2xs.text-foreground\\/50")
+          .find("span")
           .filter((__, span) =>
             /Ažurirano|Azurirano|Objavljeno/i.test($(span).text()),
           )
-          .first()
+          .last()
           .text(),
       ) ?? cleanText(card.text());
 
