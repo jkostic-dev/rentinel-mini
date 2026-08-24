@@ -52,10 +52,15 @@ test("halooglasi: maps every field of the first card", () => {
   assert.ok(first);
 
   assert.equal(first.location?.split(", ").length, 4);
-  assert.equal(first.price.raw, "400 €");
-  assert.equal(first.price.value, 400);
+  assert.equal(first.price.raw, "300 €");
+  assert.equal(first.price.value, 300);
   assert.equal(first.price.currency, "EUR");
-  assert.equal(first.datePosted, "2026-08-21");
+  assert.equal(first.datePosted, "2026-08-24");
+  assert.deepEqual(first.features, [
+    "34 m²",
+    "Broj soba: 1.5",
+    "Spratnost: I/4",
+  ]);
 });
 
 test("4zida: every parsed card is a usable listing", () => {
@@ -81,7 +86,7 @@ test("4zida: maps every field of the first card", () => {
   assert.equal(first.price.raw, "350 €");
   assert.equal(first.price.value, 350);
   assert.equal(first.price.currency, "EUR");
-  assert.equal(first.datePosted, "2026-08-21");
+  assert.equal(first.datePosted, "2026-08-23");
   assert.equal(first.features.length, 5);
-  assert.equal(first.features[0], "1 soba");
+  assert.equal(first.features[0], "0.5 soba");
 });
