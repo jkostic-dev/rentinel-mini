@@ -49,7 +49,7 @@ test("an unsupported site is skipped with a warning, not a crash", () => {
     ...validEnv,
     SCRAPE_URLS: JSON.stringify({
       Supported: "https://www.4zida.rs/izdavanje-stanova/vozdovac",
-      Unsupported: "https://www.nekretnine.rs/stambeni-objekti",
+      Unsupported: "https://www.example.com/stanovi",
     }),
   });
 
@@ -66,7 +66,7 @@ test("no supported url at all is a startup error", () => {
     () =>
       loadConfig({
         ...validEnv,
-        SCRAPE_URLS: JSON.stringify({ Only: "https://www.nekretnine.rs/" }),
+        SCRAPE_URLS: JSON.stringify({ Only: "https://www.example.com/" }),
       }),
     /no supported URLs/,
   );

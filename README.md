@@ -6,8 +6,10 @@ Listings move within the hour, so a daily digest is already too late. This
 watches the search pages you already use and messages you when one of them
 gets something new.
 
-A minimal public cut of a larger Rentinel: multi-user, saved queries in a
-database, bot and dashboard UI.
+The single-user version of [Rentinel](https://github.com/jkostic-dev/rentinel):
+one process, a JSON state file, and searches set in the environment. Rentinel
+itself adds multiple users, a Telegram bot for managing searches, Postgres, and
+an admin dashboard.
 
 ## What an alert looks like
 
@@ -33,8 +35,8 @@ date is a Telegram time entity, so each reader sees it in their own locale.
 
 ## How it works
 
-1. Resolve a provider from the URL's hostname: 4zida or halooglasi.
-2. Fetch the page. 4zida over plain HTTP; halooglasi through stealth headless Chromium, which its bot challenge requires.
+1. Resolve a provider from the URL's hostname: 4zida, halooglasi or nekretnine.
+2. Fetch the page. 4zida over plain HTTP; halooglasi through stealth headless Chromium, which its bot challenge requires; nekretnine through the JSON search API its own pages call, since the HTML is behind a captcha.
 3. Refuse a page served from another host, so a captcha wall is an error and not an empty search.
 4. Parse the result cards with cheerio. 4zida also publishes JSON-LD, which is merged in for the exact price, floor area and image.
 5. Normalize each listing URL: https, primary host, no query, no hash. That is the dedupe key.
@@ -78,12 +80,14 @@ message, so keep the keys unique:
   "Voždovac 4zida p1": "https://www.4zida.rs/izdavanje-stanova/vozdovac-opstina-beograd/do-400-evra?sortiranje=najnoviji",
   "Voždovac 4zida p2": "https://www.4zida.rs/izdavanje-stanova/vozdovac-opstina-beograd/do-400-evra?sortiranje=najnoviji&strana=2",
   "Voždovac halo p1": "https://www.halooglasi.com/nekretnine/izdavanje-stanova/beograd-vozdovac?cena_d_to=400&cena_d_unit=4",
-  "Voždovac halo p2": "https://www.halooglasi.com/nekretnine/izdavanje-stanova/beograd-vozdovac?cena_d_to=400&cena_d_unit=4&page=2"
+  "Voždovac halo p2": "https://www.halooglasi.com/nekretnine/izdavanje-stanova/beograd-vozdovac?cena_d_to=400&cena_d_unit=4&page=2",
+  "Voždovac nekretnine": "https://www.nekretnine.rs/izdavanje-stambenih-nekretnina/beograd/vozdovac/?criterio=data&ordine=desc&prezzoMassimo=400"
 }
 ```
 
 - **4zida** sorts with `?sortiranje=najnoviji` and pages with `&strana=2`.
 - **halooglasi** pages with `?page=2` but has **no URL sort parameter**. Its sort dropdown is JavaScript-driven, and the server-rendered order ignores `sort`, `sortField` and `sortOrder`. Promoted ads lead the results, so watching three or four pages is worth it there.
+- **nekretnine** sorts newest-first with `?criterio=data&ordine=desc` and pages with `&pag=2`. Residential searches only (apartments, houses, cottages, rooms); a path it cannot map to the search API fails that target with a "cannot watch" error instead of silently watching a broader search. Its API returns no posting date, so those alerts have none.
 
 Dedupe is global, so a listing that drifts from page 1 to page 2 between cycles
 is still sent once.
@@ -105,7 +109,7 @@ npm run typecheck
 npm run format:check
 ```
 
-Tests parse committed HTML fixtures captured from both sites, so they run
+Tests parse committed fixtures captured from all three sites, so they run
 offline. Each provider is held to invariants across every listing, which survive
 a fixture refresh, and to hand-written cards for the edge cases.
 

@@ -59,3 +59,21 @@ test("scrambles a phone number, whole or written in pieces inside a description"
   assert.ok(!html.includes("0601234567"));
   assert.doesNotMatch(html, /060 123 4567/);
 });
+
+test("redacts a JSON body by value and leaves its keys and numbers alone", () => {
+  const body = redact(
+    JSON.stringify({
+      results: [
+        { title: "Dvosoban stan Centar", price: 250, url: "/oglasi/1234567/" },
+      ],
+    }),
+    ["oglasi"],
+  );
+
+  const [result] = (JSON.parse(body) as { results: Record<string, unknown>[] })
+    .results;
+  assert.equal(result?.price, 250);
+  assert.ok(!String(result?.title).includes("Centar"));
+  assert.match(String(result?.url), /^\/oglasi\/\d{7}\/$/);
+  assert.notEqual(result?.url, "/oglasi/1234567/");
+});

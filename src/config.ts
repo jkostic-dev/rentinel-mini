@@ -44,7 +44,7 @@ function parseTargets(raw: string | undefined, warnings: string[]): Target[] {
 
   if (targets.length === 0) {
     throw new Error(
-      "SCRAPE_URLS has no supported URLs. Add at least one 4zida.rs or halooglasi.com search URL.",
+      "SCRAPE_URLS has no supported URLs. Add at least one 4zida.rs, halooglasi.com or nekretnine.rs search URL.",
     );
   }
 

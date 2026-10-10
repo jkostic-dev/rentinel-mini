@@ -1,4 +1,4 @@
-export type ProviderId = "4zida" | "halooglasi";
+export type ProviderId = "4zida" | "halooglasi" | "nekretnine";
 
 export type ListingPrice = {
   value: number | null;
@@ -25,6 +25,7 @@ export type Listing = {
 export type RawPage = {
   /** Where the body was served from after redirects, not the URL requested. */
   url: string;
+  /** HTML, or whatever else the provider fetches: nekretnine reads a JSON API. */
   body: string;
 };
 
@@ -33,7 +34,7 @@ export type Provider = {
   matches(url: URL): boolean;
   fetchPage(url: string): Promise<RawPage>;
   /** `servedFrom` is on the provider's own domain; relative links resolve against it. */
-  parse(html: string, servedFrom: URL): Listing[];
+  parse(body: string, servedFrom: URL): Listing[];
 };
 
 export type State = {

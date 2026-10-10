@@ -92,6 +92,11 @@ export function redactFixture(
     }
   };
 
+  const json = parseJson(body);
+  if (json !== undefined) {
+    return `${JSON.stringify(redactJson(json), null, 2)}\n`;
+  }
+
   const $ = load(body);
 
   $("script").each((_, script) => {

@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import test from "node:test";
+import test, { afterEach, mock } from "node:test";
 import { fourZida } from "../src/providers/4zida.ts";
 import { halooglasi } from "../src/providers/halooglasi.ts";
 import { parsePage, resolveProvider } from "../src/providers/index.ts";
+import { nekretnine } from "../src/providers/nekretnine.ts";
 import type { Listing, Provider } from "../src/types.ts";
 
 const SEARCH = {
@@ -11,19 +12,33 @@ const SEARCH = {
     "https://www.4zida.rs/izdavanje-stanova/vozdovac-opstina-beograd/do-400-evra",
   halooglasi:
     "https://www.halooglasi.com/nekretnine/izdavanje-stanova/beograd-vozdovac",
+  nekretnine:
+    "https://www.nekretnine.rs/izdavanje-stambenih-nekretnina/beograd/vozdovac/?prezzoMassimo=400",
 };
 
+const FIXTURE = {
+  "4zida": "4zida.html",
+  halooglasi: "halooglasi.html",
+  nekretnine: "nekretnine.json",
+};
+
+function readFixture(provider: Provider): string {
+  return readFileSync(
+    new URL(`./fixtures/${FIXTURE[provider.id]}`, import.meta.url),
+    "utf8",
+  );
+}
+
 /**
- * The fixtures are real search pages, trimmed to what the parsers read. Every word, link and
+ * The fixtures are real search pages (for nekretnine, a search API answer), trimmed to what the parsers read. Every word, link and
  * id that could point at a real listing is scrambled; prices, dates and sizes are not, since
  * those are what the parsers are tested on.
  */
 function parseFixture(provider: Provider): Listing[] {
-  const body = readFileSync(
-    new URL(`./fixtures/${provider.id}.html`, import.meta.url),
-    "utf8",
-  );
-  return parsePage(provider, { url: SEARCH[provider.id], body });
+  return parsePage(provider, {
+    url: SEARCH[provider.id],
+    body: readFixture(provider),
+  });
 }
 
 /** Holds for every listing, so a markup change is caught even after a fixture refresh. */
@@ -46,7 +61,6 @@ function assertUsableListings(
     assert.ok(listing.features.length > 0, `${listing.url} lost its features`);
     assert.ok(listing.price.value, `${listing.url} lost its price`);
     assert.equal(listing.price.currency, "EUR");
-    assert.match(listing.datePosted ?? "", /^\d{4}-\d{2}-\d{2}$/);
   }
 
   const urls = listings.map((listing) => listing.url);
@@ -62,6 +76,7 @@ test("halooglasi: every parsed card is a usable listing", () => {
   );
 
   for (const listing of listings) {
+    assert.match(listing.datePosted ?? "", /^\d{4}-\d{2}-\d{2}$/);
     assert.match(listing.tier ?? "", /^(premium|top|standard)$/);
     assert.match(
       listing.imageUrl ?? "",
@@ -81,6 +96,7 @@ test("4zida: every parsed card is a usable listing", () => {
   );
 
   for (const listing of listings) {
+    assert.match(listing.datePosted ?? "", /^\d{4}-\d{2}-\d{2}$/);
     assert.equal(listing.tier, null);
     // Only JSON-LD names the image, so this also proves both readings were merged.
     assert.match(
@@ -164,6 +180,125 @@ test("halooglasi: canonicalizes a relative link, and skips the stock no-image th
   assert.equal(listing?.imageUrl, null);
 });
 
+test("nekretnine: every search result is a usable listing", () => {
+  const listings = parseFixture(nekretnine);
+  assertUsableListings(listings, "www.nekretnine.rs", /^\/oglasi\/\d+\/$/);
+
+  for (const listing of listings) {
+    assert.match(listing.tier ?? "", /^(premium|top|standard)$/);
+    assert.ok(listing.price.value && listing.price.value <= 400);
+    // The search API returns no date.
+    assert.equal(listing.datePosted, null);
+    if (listing.imageUrl !== null) {
+      assert.match(
+        listing.imageUrl,
+        /^https:\/\/pic\.nekretnine\.rs\/image\/\d+\//,
+      );
+    }
+  }
+});
+
+test("nekretnine: drops an off-domain advert and tolerates a body that is not JSON", () => {
+  const body = JSON.stringify({
+    results: [
+      {
+        realEstate: { title: "Elsewhere" },
+        seo: { url: "https://evil.example/oglasi/1/" },
+      },
+      { realEstate: { title: "Ours" }, seo: { url: "/oglasi/2" } },
+    ],
+  });
+
+  assert.deepEqual(
+    parsePage(nekretnine, { url: SEARCH.nekretnine, body }).map(
+      (listing) => listing.url,
+    ),
+    ["https://www.nekretnine.rs/oglasi/2/"],
+  );
+  assert.deepEqual(
+    parsePage(nekretnine, {
+      url: SEARCH.nekretnine,
+      body: "<html>challenge</html>",
+    }),
+    [],
+  );
+});
+
+const VOZDOVAC = {
+  id: "20",
+  type: 3,
+  keyurl: "vozdovac",
+  parents: [
+    { id: "324", type: 2, keyurl: "beograd" },
+    { id: "RS_3", type: 1, keyurl: "beograd-okrug" },
+    { id: "RS_1", type: 0, keyurl: "grad-beograd" },
+    { id: "RS", type: -1, keyurl: "srbija" },
+  ],
+};
+
+/** The three endpoints nekretnine's fetch talks to, answering as the site does. Returns the URLs requested. */
+function stubNekretnine(resolvedPath: string): URL[] {
+  const requested: URL[] = [];
+
+  mock.method(globalThis, "fetch", async (input: string) => {
+    const url = new URL(input);
+    requested.push(url);
+
+    if (url.pathname.endsWith("/geography/autocomplete/")) {
+      return Response.json([VOZDOVAC]);
+    }
+    if (url.pathname.endsWith("/search-list/url-resolver/")) {
+      return Response.json({ url: resolvedPath });
+    }
+
+    const response = new Response(readFixture(nekretnine));
+    Object.defineProperty(response, "url", { value: url.toString() });
+    return response;
+  });
+
+  return requested;
+}
+
+afterEach(() => mock.restoreAll());
+
+test("nekretnine: asks the search API for the ids the pasted path resolves to", async () => {
+  const requested = stubNekretnine(
+    "/izdavanje-stambenih-nekretnina/beograd/vozdovac/",
+  );
+
+  const page = await nekretnine.fetchPage(SEARCH.nekretnine);
+
+  const search = requested.find((url) =>
+    url.pathname.endsWith("/search-list/listings/"),
+  );
+  assert.deepEqual(Object.fromEntries(search?.searchParams ?? []), {
+    idContratto: "2",
+    idCategoria: "1",
+    idNazione: "RS",
+    fkRegione: "RS_1",
+    idProvincia: "RS_3",
+    idComune: "324",
+    "idMZona[]": "20",
+    prezzoMassimo: "400",
+    pag: "1",
+    path: "/izdavanje-stambenih-nekretnina/beograd/vozdovac/",
+    __lang: "sr",
+  });
+  assert.equal(page.url, search?.toString());
+  assert.ok(parsePage(nekretnine, page).length >= 5);
+});
+
+test("nekretnine: refuses a search whose ids resolve back to a different path", async () => {
+  stubNekretnine("/izdavanje-stambenih-nekretnina/beograd/");
+
+  await assert.rejects(
+    nekretnine.fetchPage(
+      "https://www.nekretnine.rs/izdavanje-stambenih-nekretnina/beograd/vozdovac/sa-liftom/",
+    ),
+    /cannot watch/,
+  );
+});
+
 test("a page served from outside the provider is an error, not an empty search", () => {
   assert.throws(
     () =>
@@ -178,6 +313,7 @@ test("a page served from outside the provider is an error, not an empty search",
 test("resolves a provider from the search URL's host", () => {
   assert.equal(resolveProvider(SEARCH["4zida"]), fourZida);
   assert.equal(resolveProvider(SEARCH.halooglasi), halooglasi);
+  assert.equal(resolveProvider(SEARCH.nekretnine), nekretnine);
   assert.equal(resolveProvider("https://4zida.rs/izdavanje-stanova"), fourZida);
   assert.equal(resolveProvider("https://www.4zida.rs.phishing.example/"), null);
   assert.equal(resolveProvider("not a url"), null);

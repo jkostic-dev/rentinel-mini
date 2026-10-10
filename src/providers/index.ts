@@ -1,8 +1,9 @@
 import type { Listing, Provider, RawPage } from "../types.ts";
 import { fourZida } from "./4zida.ts";
 import { halooglasi } from "./halooglasi.ts";
+import { nekretnine } from "./nekretnine.ts";
 
-export const providers: Provider[] = [fourZida, halooglasi];
+export const providers: Provider[] = [fourZida, halooglasi, nekretnine];
 
 export function resolveProvider(url: string): Provider | null {
   const parsed = URL.parse(url);
