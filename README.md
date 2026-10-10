@@ -11,28 +11,35 @@ database, bot and dashboard UI.
 
 ## What an alert looks like
 
+One message per listing, sent as a photo when the listing has one:
+
 ```
-Voždovac 4zida p1 • Dvosoban stan • 350 €
+350 € • Dvosoban stan
 
 • Voždovac opština, Beograd
-• 350 €
-• 2 sobe  • Namešteno
-• Etažno  • Useljivo
-• Agencija
+• 45 m²
+• 2 sobe
+• Namešteno
 
-🗓️ 23.08.2026 • (yesterday)
+23.08.2026 • yesterday
 
 https://www.4zida.rs/izdavanje-stanova/vozdovac-opstina-beograd/dvosoban-stan/0123456789abcdef01234567
+
+Voždovac 4zida p1
 ```
+
+Price and title come first, because that line is the phone notification. The
+date is a Telegram time entity, so each reader sees it in their own locale.
 
 ## How it works
 
 1. Resolve a provider from the URL's hostname: 4zida or halooglasi.
 2. Fetch the page. 4zida over plain HTTP; halooglasi through stealth headless Chromium, which its bot challenge requires.
-3. Parse the result cards with cheerio.
-4. Normalize each listing URL: absolute, no query, no hash. That is the dedupe key.
-5. Diff against every URL already seen, across all searches.
-6. Send what is left to Telegram, then persist the state.
+3. Refuse a page served from another host, so a captcha wall is an error and not an empty search.
+4. Parse the result cards with cheerio. 4zida also publishes JSON-LD, which is merged in for the exact price, floor area and image.
+5. Normalize each listing URL: https, primary host, no query, no hash. That is the dedupe key.
+6. Diff against every URL already seen, across all searches.
+7. Send what is left to Telegram, recording each listing as seen once it is delivered.
 
 The first run of a search URL seeds: it records what is there and sends nothing.
 Adding a URL later is quiet for the same reason.
@@ -99,14 +106,14 @@ npm run format:check
 ```
 
 Tests parse committed HTML fixtures captured from both sites, so they run
-offline. Each provider is checked two ways: invariants across every card, which
-survive a fixture refresh, and exact values on the first card, which catch
-field-mapping bugs.
+offline. Each provider is held to invariants across every listing, which survive
+a fixture refresh, and to hand-written cards for the edge cases.
 
-Fixtures are five cards plus the ancestors that give them structural context.
-Page chrome is stripped, and every word, link and id that could point at a real
-listing is scrambled; only prices, dates, sizes and the sites' own vocabulary
-stay readable. None of the rest is parsed, and it is not mine to republish.
+Fixtures are real search pages run through two steps. `scripts/trimHtml.ts`
+drops scripts, styles, page chrome and every attribute the parsers do not read.
+`scripts/redactFixture.ts` then scrambles every word, link and id that could
+point at a real listing; only prices, dates, sizes and the sites' own vocabulary
+stay readable. No real listing is committed, and the markup keeps its shape.
 
 Re-capture when a site's markup moves and the tests fail:
 
@@ -115,8 +122,8 @@ npm run fixtures
 ```
 
 It fetches through the providers' own fetch path and refuses to write a fixture
-that parses to zero listings. Update the first-card assertions afterwards. 4zida
-moved its cards out of `<main>` in August 2026 and the alerts went silent; see
+that parses to zero listings. 4zida moved its cards out of `<main>` in August
+2026 and the alerts went silent; see
 `fix(4zida): re-anchor card selectors after markup change`.
 
 ## Scraping responsibly
