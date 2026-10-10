@@ -1,5 +1,6 @@
 import puppeteerExtra from "puppeteer-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
+import type { RawPage } from "./types.ts";
 
 const BROWSER_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
@@ -8,7 +9,7 @@ const PAGE_USER_AGENT =
 const BROWSER_TIMEOUT_MS = 60_000;
 const HEADLESS = true;
 
-export async function fetchHtml(url: string): Promise<string> {
+export async function fetchHtml(url: string): Promise<RawPage> {
   const response = await fetch(url, {
     headers: {
       "user-agent": BROWSER_USER_AGENT,
@@ -20,7 +21,7 @@ export async function fetchHtml(url: string): Promise<string> {
     throw new Error(`Failed fetching ${url} (status ${response.status}).`);
   }
 
-  return await response.text();
+  return { url: response.url, body: await response.text() };
 }
 
 let stealthConfigured = false;
@@ -47,7 +48,7 @@ function browser() {
 export async function fetchHtmlWithBrowser(
   url: string,
   waitForSelector: string,
-): Promise<string> {
+): Promise<RawPage> {
   const instance = await browser().launch({
     headless: HEADLESS,
     // Chromium's sandbox needs privileges the container's non-root user lacks.
@@ -68,7 +69,7 @@ export async function fetchHtmlWithBrowser(
       timeout: BROWSER_TIMEOUT_MS,
     });
 
-    return await page.content();
+    return { url: page.url(), body: await page.content() };
   } finally {
     await instance.close();
   }

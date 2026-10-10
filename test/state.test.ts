@@ -11,12 +11,14 @@ const page2: Target = { queryName: "Voždovac p2", url: "https://site/p2" };
 
 function listing(url: string): Listing {
   return {
+    url,
     name: `Stan ${url}`,
     location: null,
     features: [],
+    tier: null,
     price: { value: null, currency: null, raw: null },
     datePosted: null,
-    url,
+    imageUrl: null,
   };
 }
 

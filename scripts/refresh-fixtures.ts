@@ -1,6 +1,5 @@
-import { load } from "cheerio";
 import { writeFile } from "node:fs/promises";
-import { providers } from "../src/providers/index.ts";
+import { parsePage, providers } from "../src/providers/index.ts";
 import type { ProviderId } from "../src/types.ts";
 import { redactFixture } from "./redactFixture.ts";
 import { trimHtml } from "./trimHtml.ts";
@@ -11,33 +10,30 @@ import { trimHtml } from "./trimHtml.ts";
  */
 type FixtureSpec = {
   url: string;
-  /** The same card selector the provider parses with. */
-  card: string;
   /** The site's own words the parser or its tests read; every other word is scrambled. */
   keepWords: string[];
 };
 
-/** Enough to exercise every selector, small enough to commit. */
-const CARD_LIMIT = 5;
-
 const FIXTURES: Record<ProviderId, FixtureSpec> = {
   "4zida": {
     url: "https://www.4zida.rs/izdavanje-stanova/vozdovac-opstina-beograd/do-400-evra?sortiranje=najnoviji",
-    card: "[test-data='ad-search-card']",
     keepWords: [
       "izdavanje",
       "prodaja",
       "stanova",
       "Ažurirano",
+      "Objavljeno",
       "soba",
+      "sobe",
       "Beograd",
+      "webp",
     ],
   },
   halooglasi: {
     url: "https://www.halooglasi.com/nekretnine/izdavanje-stanova/beograd-vozdovac?cena_d_to=400&cena_d_unit=4",
-    card: "#ad-list-2 .product-item.product-list-item[data-id]",
     keepWords: [
       "nekretnine",
+      "image",
       "Kvadratura",
       "Broj",
       "soba",
@@ -47,42 +43,17 @@ const FIXTURES: Record<ProviderId, FixtureSpec> = {
   },
 };
 
-/** Cuts a page down to a few cards and their ancestors; the rest is not parsed, and not ours to republish. */
-function keepCards(html: string, spec: FixtureSpec): string {
-  const $ = load(html);
-
-  const cards = $(spec.card);
-  if (cards.length === 0) {
-    throw new Error(`No card matched "${spec.card}"; the markup moved again.`);
-  }
-  cards.slice(CARD_LIMIT).remove();
-
-  const KEEP = "data-fixture-keep";
-  $(spec.card).parents().addBack().attr(KEEP, "");
-  $("body *").each((_, element) => {
-    const node = $(element);
-    if (node.is(`[${KEEP}]`) || node.closest(spec.card).length > 0) {
-      return;
-    }
-    node.remove();
-  });
-  $(`[${KEEP}]`).removeAttr(KEEP);
-
-  return $.html();
-}
-
 for (const provider of providers) {
   const spec = FIXTURES[provider.id];
   console.log(`[fixtures] Fetching ${provider.id}: ${spec.url}`);
 
-  // Redacted so that no real listing is committed.
-  const html = redactFixture(
-    trimHtml(keepCards(await provider.fetchPage(spec.url), spec)),
-    spec.keepWords,
-  );
-  const listings = provider.parse(html);
+  const page = await provider.fetchPage(spec.url);
+  // Trimmed to what the parser reads, and redacted so that no real listing is committed.
+  const body = redactFixture(trimHtml(page.body), spec.keepWords);
 
-  // A bot challenge must never overwrite a good fixture.
+  // Counted from what is written, so trimming or redacting away something the parser needs,
+  // or a bot challenge, fails here rather than overwriting a good fixture.
+  const listings = parsePage(provider, { ...page, body });
   if (listings.length === 0) {
     throw new Error(
       `[fixtures] ${provider.id} yielded 0 listings; refusing to write the fixture.`,
@@ -90,8 +61,8 @@ for (const provider of providers) {
   }
 
   const path = new URL(`../test/fixtures/${provider.id}.html`, import.meta.url);
-  await writeFile(path, html);
+  await writeFile(path, body);
   console.log(
-    `[fixtures] Wrote ${provider.id}.html: ${listings.length} listings, ${Math.round(html.length / 1024)} KB`,
+    `[fixtures] Wrote ${provider.id}.html: ${listings.length} listings, ${Math.round(body.length / 1024)} KB`,
   );
 }

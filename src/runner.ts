@@ -1,6 +1,6 @@
-import { resolveProvider } from "./providers/index.ts";
+import { parsePage, resolveProvider } from "./providers/index.ts";
 import { loadState, saveState, selectNewListings } from "./state.ts";
-import { sendListings } from "./telegram.ts";
+import { sendListing } from "./telegram.ts";
 import type { Config, State, Target } from "./types.ts";
 
 export const TARGET_DELAY_MS = 10_000;
@@ -23,10 +23,7 @@ export function createRunner(config: Config): {
       return;
     }
 
-    const html = await provider.fetchPage(target.url);
-    const listings = provider
-      .parse(html)
-      .map((listing) => ({ ...listing, queryName: target.queryName }));
+    const listings = parsePage(provider, await provider.fetchPage(target.url));
 
     if (listings.length === 0) {
       // The only signal that a site changed its markup or served a challenge.
@@ -52,17 +49,28 @@ export function createRunner(config: Config): {
       return;
     }
 
-    const messageCount = await sendListings({
-      telegramToken: config.telegramToken,
-      telegramChatIds: config.telegramChatIds,
-      listings: newListings,
-    });
-
     // Recorded as seen only once Telegram has them, so a failed send retries next cycle.
-    state = nextState;
-    await saveState(config.stateFilePath, nextState);
+    const unsent = new Set(newListings.map((listing) => listing.url));
+    try {
+      for (const listing of newListings) {
+        await sendListing({
+          telegramToken: config.telegramToken,
+          telegramChatIds: config.telegramChatIds,
+          queryName: target.queryName,
+          listing,
+        });
+        unsent.delete(listing.url);
+      }
+    } finally {
+      state = {
+        ...nextState,
+        seenUrls: nextState.seenUrls.filter((url) => !unsent.has(url)),
+      };
+      await saveState(config.stateFilePath, state);
+    }
+
     console.log(
-      `[scraper] "${target.queryName}": sent ${newListings.length} new listing(s) in ${messageCount} message(s).`,
+      `[scraper] "${target.queryName}": sent ${newListings.length} new listing(s).`,
     );
   };
 

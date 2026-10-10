@@ -1,121 +1,124 @@
 import { load } from "cheerio";
 import { fetchHtmlWithBrowser } from "../fetch.ts";
 import type { Listing, Provider } from "../types.ts";
-import {
-  absoluteUrl,
-  cleanText,
-  inferCurrency,
-  parseDate,
-  parsePrice,
-} from "./shared.ts";
+import { toIsoDate } from "./shared/date.ts";
+import { mergeByUrl } from "./shared/merge.ts";
+import { parsePrice } from "./shared/price.ts";
+import { cleanText } from "./shared/text.ts";
+import { listingUrl, onHost, parseImageUrl } from "./shared/url.ts";
 
-const BASE_URL = "https://www.halooglasi.com";
-const HOSTS = new Set(["halooglasi.com", "www.halooglasi.com"]);
-const LISTING_PATH_PATTERN = /\/nekretnine\/.+\/\d+$/i;
+const HOST = "www.halooglasi.com";
+const HOSTS = new Set(["halooglasi.com", HOST]);
+const LISTING_PATH = /\/nekretnine\/.+\/\d+$/i;
 const RESULTS_SELECTOR = "#ad-list-2 .product-item.product-list-item";
 
-/** halooglasi labels square metres "m2"; the cards read better with "m²". */
-function normalizeFeatureText(raw: string): string {
-  const normalized = raw
-    .replace(/\bm2\s*kvadratura\b\s*:\s*([0-9]+(?:[.,][0-9]+)?)/gi, "$1 m²")
-    .replace(/\bm2\s*kvadratura\b\s*([0-9]+(?:[.,][0-9]+)?)/gi, "$1 m²")
+function matches(url: URL): boolean {
+  return (
+    HOSTS.has(url.hostname.toLowerCase()) &&
+    url.pathname.startsWith("/nekretnine")
+  );
+}
+
+const parseListingUrl = (href: string | null | undefined, base: URL) =>
+  listingUrl(href, base, {
+    matches,
+    canonicalize: (url) => onHost(url, HOST),
+    listingPath: LISTING_PATH,
+  });
+
+function tierFromClass(cardClass: string): string {
+  if (/\bPremium\b/.test(cardClass)) return "premium";
+  if (/\bTop\b/.test(cardClass)) return "top";
+  return "standard";
+}
+
+/** The area is labelled "m2 Kvadratura", so it reads as `40 m²` rather than `m2 Kvadratura: 40`. */
+function normalizeUnits(feature: string): string {
+  const normalized = feature
+    .replace(/\bm2\s*kvadratura\b\s*:?\s*([0-9]+(?:[.,][0-9]+)?)/gi, "$1 m²")
+    .replace(/\bmtk\b/gi, "m²")
     .replace(/\bm2\b/gi, "m²")
     .replace(/(\d)\s*m²\b/g, "$1 m²");
 
-  return cleanText(normalized) ?? raw;
+  return cleanText(normalized) ?? feature;
 }
 
-/** Feature cells read "65 Kvadratura"; flip them into "Kvadratura: 65". */
-function buildFeatureText(valueWrapperText: string): string | null {
-  const compact = cleanText(valueWrapperText);
-  if (!compact) {
-    return null;
-  }
+/** A feature is written value first, then its legend: "1.5 Broj soba" reads as "Broj soba: 1.5". */
+function parseFeature(valueWrapperText: string): string | null {
+  const text = cleanText(valueWrapperText);
+  if (!text) return null;
 
-  const match = compact.match(/(.+?)\s+([A-ZČĆŠĐŽa-zčćšđž].*)$/);
-  const value = cleanText(match?.[1]);
-  const legend = cleanText(match?.[2]);
-  if (!value || !legend) {
-    return normalizeFeatureText(compact);
-  }
-
-  return normalizeFeatureText(`${legend}: ${value}`);
+  const [, value, legend] = text.match(/(.+?)\s+([A-ZČĆŠĐŽa-zčćšđž].*)$/) ?? [];
+  return normalizeUnits(value && legend ? `${legend}: ${value}` : text);
 }
 
-function isListingUrl(url: string): boolean {
-  try {
-    return LISTING_PATH_PATTERN.test(new URL(url).pathname);
-  } catch {
-    return false;
-  }
+/** A card without a photo shows a stock `no-image.jpg`. */
+function parseCardImage(src: string | undefined, base: URL): string | null {
+  return src && !/\/no-image\./i.test(src) ? parseImageUrl(src, base) : null;
 }
 
-export function parseHalooglasi(html: string): Listing[] {
+function parseHalooglasi(html: string, base: URL): Listing[] {
   const $ = load(html);
-  const listings: Listing[] = [];
 
-  $("#ad-list-2 .product-item.product-list-item[data-id]")
-    .filter((_, element) => !$(element).hasClass("banner-list"))
-    .each((_, element) => {
+  const listings = $(`${RESULTS_SELECTOR}[data-id]`)
+    .not(".banner-list")
+    .toArray()
+    .flatMap((element): Listing[] => {
       const card = $(element);
-
-      const href =
-        card.find("h3.product-title a[href]").first().attr("href") ??
-        card.find("a.a-images[href]").first().attr("href");
-      const url = absoluteUrl(href, BASE_URL);
-      if (!url || !isListingUrl(url)) {
-        return;
-      }
-
-      const name = cleanText(card.find("h3.product-title a").first().text());
-      if (!name) {
-        return;
-      }
-
-      const locationParts = card
-        .find("ul.subtitle-places li")
-        .map((__, li) => cleanText($(li).text()))
-        .get()
-        .filter((part): part is string => Boolean(part));
-
-      const features = card
-        .find("ul.product-features li .value-wrapper")
-        .map((__, node) => buildFeatureText($(node).text()))
-        .get()
-        .filter((feature): feature is string => Boolean(feature));
-
-      const priceDataValue = cleanText(
-        card
-          .find(".central-feature span[data-value]")
-          .first()
-          .attr("data-value"),
+      const title = card.find("h3.product-title a").first();
+      const url = parseListingUrl(
+        title.attr("href") ??
+          card.find("a.a-images[href]").first().attr("href"),
+        base,
       );
+      const name = cleanText(title.text());
+      if (!url || !name) return [];
+
+      const places = card
+        .find("ul.subtitle-places li")
+        .toArray()
+        .flatMap((place) => cleanText($(place).text()) ?? []);
+
+      const priceBox = card.find(".central-feature").first();
       const rawPrice =
-        cleanText(card.find(".central-feature i").first().text()) ??
-        cleanText(card.find(".central-feature").first().text());
+        cleanText(priceBox.find("i").first().text()) ??
+        cleanText(priceBox.text());
+      // `data-value` is the exact number behind the formatted price.
+      const exactPrice = cleanText(
+        priceBox.find("span[data-value]").first().attr("data-value"),
+      );
 
-      const dateText = cleanText(card.find("span.publish-date").first().text());
-
-      listings.push({
-        name,
-        location: locationParts.length > 0 ? locationParts.join(", ") : null,
-        features,
-        price: {
-          value: parsePrice(priceDataValue ?? rawPrice),
-          currency: inferCurrency(rawPrice),
-          raw: rawPrice,
+      return [
+        {
+          url,
+          name,
+          location: places.length > 0 ? places.join(", ") : null,
+          features: card
+            .find("ul.product-features li .value-wrapper")
+            .toArray()
+            .flatMap((feature) => parseFeature($(feature).text()) ?? []),
+          tier: tierFromClass(card.attr("class") ?? ""),
+          price: {
+            ...parsePrice(rawPrice),
+            value: parsePrice(exactPrice ?? rawPrice).value,
+          },
+          datePosted:
+            toIsoDate(card.find("span.publish-date").first().text()) ??
+            toIsoDate(card.text()),
+          imageUrl: parseCardImage(
+            card.find("a.a-images img[src]").first().attr("src"),
+            base,
+          ),
         },
-        datePosted: parseDate(dateText) ?? parseDate(card.text()),
-        url,
-      });
+      ];
     });
 
-  return listings;
+  return mergeByUrl(listings);
 }
 
 export const halooglasi: Provider = {
   id: "halooglasi",
-  matches: (url) => HOSTS.has(url.hostname.toLowerCase()),
+  matches,
   fetchPage: (url) => fetchHtmlWithBrowser(url, RESULTS_SELECTOR),
   parse: parseHalooglasi,
 };

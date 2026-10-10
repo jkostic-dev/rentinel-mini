@@ -6,24 +6,34 @@ export type ListingPrice = {
   raw: string | null;
 };
 
+/**
+ * `tier` is the provider's promotion label, null where it has none. `datePosted` is `YYYY-MM-DD`,
+ * the most recent date the site shows, which on some providers is an updated date.
+ */
 export type Listing = {
+  /** Canonical: https, the site's primary host, no query or hash. This is the dedupe key. */
+  url: string;
   name: string;
-  /** The SCRAPE_URLS key the listing came from; attached by the runner. */
-  queryName?: string;
   location: string | null;
   features: string[];
+  tier: string | null;
   price: ListingPrice;
-  /** ISO yyyy-mm-dd. */
   datePosted: string | null;
-  /** Absolute, hash and query stripped. This is the dedupe key. */
+  imageUrl: string | null;
+};
+
+export type RawPage = {
+  /** Where the body was served from after redirects, not the URL requested. */
   url: string;
+  body: string;
 };
 
 export type Provider = {
   id: ProviderId;
-  matches: (url: URL) => boolean;
-  fetchPage: (url: string) => Promise<string>;
-  parse: (html: string) => Listing[];
+  matches(url: URL): boolean;
+  fetchPage(url: string): Promise<RawPage>;
+  /** `servedFrom` is on the provider's own domain; relative links resolve against it. */
+  parse(html: string, servedFrom: URL): Listing[];
 };
 
 export type State = {

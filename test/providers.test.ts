@@ -1,92 +1,184 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { parse4zida } from "../src/providers/4zida.ts";
-import { parseHalooglasi } from "../src/providers/halooglasi.ts";
-import type { Listing } from "../src/types.ts";
+import { fourZida } from "../src/providers/4zida.ts";
+import { halooglasi } from "../src/providers/halooglasi.ts";
+import { parsePage, resolveProvider } from "../src/providers/index.ts";
+import type { Listing, Provider } from "../src/types.ts";
+
+const SEARCH = {
+  "4zida":
+    "https://www.4zida.rs/izdavanje-stanova/vozdovac-opstina-beograd/do-400-evra",
+  halooglasi:
+    "https://www.halooglasi.com/nekretnine/izdavanje-stanova/beograd-vozdovac",
+};
 
 /**
- * The fixtures are five-card excerpts of a real search page: enough markup to exercise
- * every selector, little enough third-party HTML for a public repo. Every word that could
- * name a listing is scrambled; prices, dates and sizes are not, since those are what the
- * parser is tested on.
+ * The fixtures are real search pages, trimmed to what the parsers read. Every word, link and
+ * id that could point at a real listing is scrambled; prices, dates and sizes are not, since
+ * those are what the parsers are tested on.
  */
-export function readFixture(name: string): string {
-  return readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8");
+function parseFixture(provider: Provider): Listing[] {
+  const body = readFileSync(
+    new URL(`./fixtures/${provider.id}.html`, import.meta.url),
+    "utf8",
+  );
+  return parsePage(provider, { url: SEARCH[provider.id], body });
 }
 
-/**
- * Invariants hold for every card, so a markup change is caught even after a fixture
- * refresh. Exact values are asserted on the first card only, to keep refreshes cheap,
- * and only where the fixture is readable: names, places and links are scrambled.
- */
-export function assertListingInvariants(
+/** Holds for every listing, so a markup change is caught even after a fixture refresh. */
+function assertUsableListings(
   listings: Listing[],
-  listingPathPattern: RegExp,
-  expectedCount: number,
+  host: string,
+  listingPath: RegExp,
 ): void {
-  assert.equal(
-    listings.length,
-    expectedCount,
-    `expected ${expectedCount} listings, got ${listings.length}`,
-  );
+  assert.ok(listings.length >= 5, `only ${listings.length} listings parsed`);
 
   for (const listing of listings) {
-    assert.ok(listing.name.length > 0, "listing name must not be empty");
-
     const url = new URL(listing.url);
-    assert.match(url.protocol, /^https?:$/);
-    assert.match(url.pathname, listingPathPattern);
+    assert.equal(url.origin, `https://${host}`);
+    assert.match(url.pathname, listingPath);
     assert.equal(url.search, "", `${listing.url} must not carry a query`);
     assert.equal(url.hash, "", `${listing.url} must not carry a hash`);
+
+    assert.ok(listing.name.length > 0, `${listing.url} lost its name`);
+    assert.ok(listing.location, `${listing.url} lost its location`);
+    assert.ok(listing.features.length > 0, `${listing.url} lost its features`);
+    assert.ok(listing.price.value, `${listing.url} lost its price`);
+    assert.equal(listing.price.currency, "EUR");
+    assert.match(listing.datePosted ?? "", /^\d{4}-\d{2}-\d{2}$/);
   }
+
+  const urls = listings.map((listing) => listing.url);
+  assert.equal(new Set(urls).size, urls.length, "a listing parsed twice");
 }
 
 test("halooglasi: every parsed card is a usable listing", () => {
-  const listings = parseHalooglasi(readFixture("halooglasi.html"));
-  assertListingInvariants(listings, /^\/nekretnine\/.+\/\d+$/, 5);
-});
-
-test("halooglasi: maps every field of the first card", () => {
-  const [first] = parseHalooglasi(readFixture("halooglasi.html"));
-  assert.ok(first);
-
-  assert.equal(first.location?.split(", ").length, 4);
-  assert.equal(first.price.raw, "300 €");
-  assert.equal(first.price.value, 300);
-  assert.equal(first.price.currency, "EUR");
-  assert.equal(first.datePosted, "2026-08-24");
-  assert.deepEqual(first.features, [
-    "34 m²",
-    "Broj soba: 1.5",
-    "Spratnost: I/4",
-  ]);
-});
-
-test("4zida: every parsed card is a usable listing", () => {
-  const listings = parse4zida(readFixture("4zida.html"));
-  assertListingInvariants(
+  const listings = parseFixture(halooglasi);
+  assertUsableListings(
     listings,
-    /^\/(?:izdavanje|prodaja)-stanova\/.+\/[a-f0-9]{24}$/,
-    5,
+    "www.halooglasi.com",
+    /^\/nekretnine\/.+\/\d+$/,
   );
 
   for (const listing of listings) {
-    assert.ok(listing.location, `${listing.url} lost its location`);
-    assert.ok(listing.datePosted, `${listing.url} lost its date`);
-    assert.ok(listing.features.length > 0, `${listing.url} lost its features`);
+    assert.match(listing.tier ?? "", /^(premium|top|standard)$/);
+    assert.match(
+      listing.imageUrl ?? "",
+      /^https:\/\/img\.halooglasi\.com\/.+\.(jpe?g|png|webp)$/i,
+    );
+    // "m2 Kvadratura: 34" is rewritten the way a person reads it.
+    assert.match(listing.features[0] ?? "", /^\d+(?:[.,]\d+)? m²$/);
   }
 });
 
-test("4zida: maps every field of the first card", () => {
-  const [first] = parse4zida(readFixture("4zida.html"));
-  assert.ok(first);
+test("4zida: every parsed card is a usable listing", () => {
+  const listings = parseFixture(fourZida);
+  assertUsableListings(
+    listings,
+    "www.4zida.rs",
+    /^\/(?:izdavanje|prodaja)-stanova\/.+\/[a-f0-9]{24}$/,
+  );
 
-  assert.ok(first.location?.endsWith(", Beograd"));
-  assert.equal(first.price.raw, "350 €");
-  assert.equal(first.price.value, 350);
-  assert.equal(first.price.currency, "EUR");
-  assert.equal(first.datePosted, "2026-08-23");
-  assert.equal(first.features.length, 5);
-  assert.equal(first.features[0], "0.5 soba");
+  for (const listing of listings) {
+    assert.equal(listing.tier, null);
+    // Only JSON-LD names the image, so this also proves both readings were merged.
+    assert.match(
+      listing.imageUrl ?? "",
+      /^https:\/\/resizer2\.4zida\.rs\/.+\.webp$/,
+    );
+  }
+});
+
+const card4zida = (href: string, name: string) =>
+  `<div test-data="ad-search-card"><a href="${href}"></a>` +
+  `<p class="truncate font-medium leading-tight">${name}</p></div>`;
+
+test("4zida: drops a card linking off the domain instead of rewriting it onto one", () => {
+  const real =
+    "https://www.4zida.rs/izdavanje-stanova/beograd/aaaaaaaaaaaaaaaaaaaaaaaa";
+
+  const listings = parsePage(fourZida, {
+    url: SEARCH["4zida"],
+    body:
+      card4zida(
+        "https://sponsor.example.com/izdavanje-stanova/beograd/bbbbbbbbbbbbbbbbbbbbbbbb",
+        "Ad",
+      ) + card4zida(real, "A real listing"),
+  });
+
+  assert.deepEqual(
+    listings.map((listing) => listing.url),
+    [real],
+  );
+});
+
+test("4zida: merges a listing's JSON-LD with its card", () => {
+  const path = "/izdavanje-stanova/beograd/aaaaaaaaaaaaaaaaaaaaaaaa";
+  const node = {
+    "@type": "RealEstateListing",
+    url: path,
+    name: "Stan",
+    image: ["https://cdn.example/a.jpg", "https://cdn.example/b.jpg"],
+    offers: { price: 350, priceCurrency: "EUR" },
+    itemOffered: { floorSize: { value: 38, unitCode: "MTK" } },
+  };
+
+  const [listing, ...rest] = parsePage(fourZida, {
+    url: SEARCH["4zida"],
+    body:
+      `<script type="application/ld+json">${JSON.stringify(node)}</script>` +
+      card4zida(path, "Stan iz kartice"),
+  });
+
+  assert.deepEqual(rest, []);
+  assert.deepEqual(listing, {
+    url: `https://www.4zida.rs${path}`,
+    name: "Stan",
+    location: null,
+    features: ["38 m²"],
+    tier: null,
+    price: { value: 350, currency: "EUR", raw: "350" },
+    datePosted: null,
+    imageUrl: "https://cdn.example/a.jpg",
+  });
+});
+
+test("halooglasi: canonicalizes a relative link, and skips the stock no-image thumbnail", () => {
+  const body =
+    '<div id="ad-list-2"><div class="product-item product-list-item Top" data-id="1">' +
+    '<a class="a-images" href="oglas/1234567890123"><img src="/Content/img/no-image.jpg"></a>' +
+    '<h3 class="product-title"><a href="oglas/1234567890123">A real listing</a></h3>' +
+    "</div></div>";
+
+  const [listing] = parsePage(halooglasi, {
+    url: "https://halooglasi.com/nekretnine/izdavanje-stanova/",
+    body,
+  });
+
+  assert.equal(
+    listing?.url,
+    "https://www.halooglasi.com/nekretnine/izdavanje-stanova/oglas/1234567890123",
+  );
+  assert.equal(listing?.tier, "top");
+  assert.equal(listing?.imageUrl, null);
+});
+
+test("a page served from outside the provider is an error, not an empty search", () => {
+  assert.throws(
+    () =>
+      parsePage(fourZida, {
+        url: "https://interstitial.example.com/challenge",
+        body: "<html></html>",
+      }),
+    /served from outside the provider/,
+  );
+});
+
+test("resolves a provider from the search URL's host", () => {
+  assert.equal(resolveProvider(SEARCH["4zida"]), fourZida);
+  assert.equal(resolveProvider(SEARCH.halooglasi), halooglasi);
+  assert.equal(resolveProvider("https://4zida.rs/izdavanje-stanova"), fourZida);
+  assert.equal(resolveProvider("https://www.4zida.rs.phishing.example/"), null);
+  assert.equal(resolveProvider("not a url"), null);
 });

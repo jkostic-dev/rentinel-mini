@@ -1,102 +1,145 @@
 import { load } from "cheerio";
 import { fetchHtml } from "../fetch.ts";
 import type { Listing, Provider } from "../types.ts";
+import { toIsoDate } from "./shared/date.ts";
 import {
-  absoluteUrl,
-  cleanText,
-  inferCurrency,
-  parseDate,
-  parsePrice,
-} from "./shared.ts";
+  asObject,
+  asText,
+  collectByType,
+  extractJsonLd,
+  type JsonObject,
+} from "./shared/json.ts";
+import { mergeByUrl } from "./shared/merge.ts";
+import { parsePrice } from "./shared/price.ts";
+import { cleanText } from "./shared/text.ts";
+import { listingUrl, onHost, parseImageUrl } from "./shared/url.ts";
 
-const BASE_URL = "https://www.4zida.rs";
-const HOSTS = new Set(["4zida.rs", "www.4zida.rs"]);
-const LISTING_PATH_PATTERN =
-  /\/(?:izdavanje|prodaja)-stanova\/.+\/[a-f0-9]{24}\/?$/i;
+const HOST = "www.4zida.rs";
+const HOSTS = new Set(["4zida.rs", HOST]);
 
-function isListingUrl(url: string): boolean {
-  try {
-    return LISTING_PATH_PATTERN.test(new URL(url).pathname);
-  } catch {
-    return false;
-  }
+/** Ads end in a 24-character id. Anything else on these paths is a filter or a cross-sell. */
+const LISTING_PATH = /^\/(?:izdavanje|prodaja)-stanova\/.+\/[a-f0-9]{24}\/?$/i;
+
+function matches(url: URL): boolean {
+  return HOSTS.has(url.hostname.toLowerCase());
 }
 
-export function parse4zida(html: string): Listing[] {
-  const $ = load(html);
-  const listings: Listing[] = [];
-
-  $("[test-data='ad-search-card']").each((_, element) => {
-    const card = $(element);
-
-    const href = card
-      .find("a[href]")
-      .map((__, anchor) => $(anchor).attr("href") ?? "")
-      .get()
-      .find((value) => /\/(?:izdavanje|prodaja)-stanova\//i.test(value));
-
-    const url = absoluteUrl(href, BASE_URL);
-    if (!url || !isListingUrl(url)) {
-      return;
-    }
-
-    const nameParagraph = card
-      .find("p.truncate.font-medium.leading-tight")
-      .first();
-    const name =
-      cleanText(nameParagraph.text()) ??
-      cleanText(card.find("img[alt]").first().attr("alt"));
-    if (!name) {
-      return;
-    }
-
-    // Anchored on position, not on Tailwind classes, which change without notice.
-    const location =
-      cleanText(nameParagraph.next("p").text()) ??
-      cleanText(card.find("p.line-clamp-2").first().text());
-
-    // Features are pill chips in the row directly below the title link.
-    const features = nameParagraph
-      .closest("a")
-      .next("div")
-      .children()
-      .map((__, chip) => cleanText($(chip).text()))
-      .get()
-      .filter((chip): chip is string => Boolean(chip));
-
-    const rawPrice = cleanText(card.find("p.bg-spotlight span").first().text());
-
-    const dateText =
-      cleanText(
-        card
-          .find("span")
-          .filter((__, span) =>
-            /Ažurirano|Azurirano|Objavljeno/i.test($(span).text()),
-          )
-          .last()
-          .text(),
-      ) ?? cleanText(card.text());
-
-    listings.push({
-      name,
-      location,
-      features,
-      price: {
-        value: parsePrice(rawPrice),
-        currency: inferCurrency(rawPrice),
-        raw: rawPrice,
-      },
-      datePosted: parseDate(dateText),
-      url,
-    });
+const parseListingUrl = (href: string | null | undefined, base: URL) =>
+  listingUrl(href, base, {
+    matches,
+    canonicalize: (url) => onHost(url, HOST),
+    listingPath: LISTING_PATH,
   });
 
-  return listings;
+/** JSON-LD has the exact price and floor area but no date or address; the cards supply those. */
+function parseJsonLd(html: string, base: URL): Listing[] {
+  const nodes = extractJsonLd(html).flatMap((block) =>
+    collectByType(block, "RealEstateListing"),
+  );
+
+  return nodes.flatMap((node) => {
+    const offer = asObject(node.offers);
+
+    const url = parseListingUrl(
+      asText(node.url) ?? asText(node["@id"]) ?? asText(offer?.url),
+      base,
+    );
+
+    const name = asText(node.name);
+    if (!url || !name) return [];
+
+    return [
+      {
+        url,
+        name,
+        location: null,
+        features: floorSizeFeature(asObject(node.itemOffered)),
+        tier: null,
+        price: parsePrice(
+          asText(offer?.price),
+          asText(offer?.priceCurrency) ?? "EUR",
+        ),
+        datePosted: toIsoDate(
+          asText(node.datePosted) ?? asText(node.datePublished),
+        ),
+        imageUrl: parseImageUrl(primaryImage(node.image), base),
+      },
+    ];
+  });
+}
+
+/** `image` is an `ImageObject`, a bare URL, or a list of either; the first is the primary one. */
+function primaryImage(image: unknown): string | null {
+  const first = Array.isArray(image) ? image[0] : image;
+  const object = asObject(first);
+  return object
+    ? (asText(object.url) ?? asText(object.contentUrl))
+    : asText(first);
+}
+
+/** `{ value: 38, unitCode: "MTK" }` reads as `38 m²`, which is how the site writes it. */
+function floorSizeFeature(itemOffered: JsonObject | null): string[] {
+  const floorSize = asObject(itemOffered?.floorSize);
+  const value = asText(floorSize?.value);
+  if (!value) return [];
+
+  const unit = asText(floorSize?.unitCode);
+  return [unit ? `${value} ${unit.replace(/^MTK$/i, "m²")}` : value];
+}
+
+function parseCards(html: string, base: URL): Listing[] {
+  const $ = load(html);
+
+  return $("[test-data='ad-search-card']")
+    .toArray()
+    .flatMap((element) => {
+      const card = $(element);
+
+      const href = card
+        .find("a[href]")
+        .toArray()
+        .map((anchor) => $(anchor).attr("href"))
+        .find((candidate) => /-stanova\//i.test(candidate ?? ""));
+
+      const url = parseListingUrl(href, base);
+      const title = card.find("p.truncate.font-medium.leading-tight").first();
+      const name =
+        cleanText(title.text()) ??
+        cleanText(card.find("img[alt]").first().attr("alt"));
+      if (!url || !name) return [];
+
+      const updated = card
+        .find("span")
+        .toArray()
+        .map((span) => cleanText($(span).text()))
+        .findLast(
+          (text) =>
+            text !== null && /Ažurirano|Azurirano|Objavljeno/i.test(text),
+        );
+
+      return [
+        {
+          url,
+          name,
+          location: cleanText(title.next("p").text()),
+          features: card
+            .find("span.rounded-full")
+            .toArray()
+            .flatMap((pill) => cleanText($(pill).text()) ?? []),
+          tier: null,
+          price: parsePrice(card.find("p.bg-spotlight span").first().text()),
+          datePosted: toIsoDate(updated),
+          // The card's `<img>` is a lazy-loaded `srcset`; JSON-LD names the same image outright.
+          imageUrl: null,
+        },
+      ];
+    });
 }
 
 export const fourZida: Provider = {
   id: "4zida",
-  matches: (url) => HOSTS.has(url.hostname.toLowerCase()),
-  fetchPage: (url) => fetchHtml(url),
-  parse: parse4zida,
+  matches,
+  fetchPage: fetchHtml,
+  parse: (html, base) =>
+    mergeByUrl([...parseJsonLd(html, base), ...parseCards(html, base)]),
 };
